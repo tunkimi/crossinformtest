@@ -1,13 +1,14 @@
-﻿using System.Diagnostics;
+﻿using System.Collections.Concurrent;
+using System.Diagnostics;
 
 class CrosInformTestEx
 {
     static void Main(string[] args)
     {
         Stopwatch Watcher = Stopwatch.StartNew();
-        Watcher.Start();                                                                        //начало отсчета времени
+        Watcher.Start();                                                                            //начало отсчета времени
 
-        string[] Separators = { ",", ".", "!", "?", ";", ":", " ", "\'", "\"", "\n" };          //разделительные знаки
+        char[] Separators = { ',', '.', '!', '?', ';', ':', ' ', '\'', '\"', '\n', '-' };           //разделительные знаки
 
         string path = "file.txt";
 
@@ -15,71 +16,66 @@ class CrosInformTestEx
 
         string InnerString;
 
+
         using (var reader = new StreamReader(path))
         {
-            InnerString = reader.ReadToEnd();                                                   //считывание исодного текста
+            InnerString = reader.ReadToEnd();                                                       //считывание исодного текста
         }
 
-        var WordPool = InnerString.Split(Separators, StringSplitOptions.RemoveEmptyEntries)     //входная строка разбитая на слова
-            .Where(word => word.Length > 2).ToArray();                                          //в словах короче 3х букв нет триплетов
+        var WordPool = InnerString.Split(Separators)                                                //входная строка разбитая на слова
+            .AsParallel().Where(word => word.Length > 2).ToArray();                                 //длиннее 3-х букв
 
-        Dictionary<string, int> TripletsCounter = new Dictionary<string, int>();                //словарь <триплет, количествоВхождений>
+        ConcurrentDictionary<string, int> TripletsCounter = new ConcurrentDictionary<string, int>();//словарь <триплет, количествоВхождений>
 
-        CountdownEvent cde = new CountdownEvent(WordPool.Length);                               //обратный счетчик выполнения
+        Worker.init(TripletsCounter, WordPool);                                                     //внесение данных в обрабатывающий класс
 
-        Worker.init(TripletsCounter, WordPool, cde);                                            //внесение данных в обрабатывающий класс
 
-        for (int i = 0; i < WordPool.Length; i++)                                               //запуск обработки для каждого конкретного слова
-        {
-            ThreadPool.QueueUserWorkItem(new WaitCallback(Worker.Work), (object)i);
-        }
-        cde.Wait();                                                                             //ожидание завершения обработки
+        #region 1 вариант
+        Parallel.ForEach<string>(WordPool, Worker.Work);
+        #endregion
 
-        var TripletsTop = TripletsCounter.OrderByDescending(r => r.Value).Take(10);             //выборка топ-10 триплетов по популярности
-        foreach (var entry in TripletsTop)                                                      //вывод в консоль
+
+        #region 2 вариант
+        //Task[] tasks = new Task[WordPool.Length];
+        //for (int i = 0; i < tasks.Length; i++)
+        //{
+        //    int j = i;
+        //    tasks[i] = Task.Factory.StartNew(() => Worker.Work(WordPool[j]));
+        //}
+        //Task.WaitAll(tasks);
+        #endregion
+
+
+
+        var TripletsTop = TripletsCounter.OrderByDescending(r => r.Value).Take(10);                 //выборка топ-10 триплетов по популярности
+        foreach (var entry in TripletsTop)                                                          //вывод в консоль
         {
             Console.WriteLine(entry.Key + " " + entry.Value);
         }
 
-        Watcher.Stop();                                                                         //окончание отсчета времени
-        Console.WriteLine(Watcher.ElapsedMilliseconds);                                         //вывод миллисекунд
-
+        Watcher.Stop();                                                                             //окончание отсчета времени
+        Console.WriteLine(Watcher.ElapsedMilliseconds);                                             //вывод миллисекунд
 
     }
     static class Worker
     {
-        public static Dictionary<string, int> ResultDictionary;                             //словарь популярности триплетов
-        public static string[] words;                                                       //набор исследуемых слов
-        private static object locker = new object();                                        //объект блокировки словаря
-        private static CountdownEvent cde;                                                  //обратный счетчик выполения
-        public static void init(Dictionary<string, int> dict, string[] str, CountdownEvent cde)     //инициализация данных
+        public static ConcurrentDictionary<string, int> ResultDictionary;                           //словарь популярности триплетов
+        public static string[] words;                                                               //набор исследуемых слов
+        private static object locker = new object();                                                //объект блокировки словаря
+        public static void init(ConcurrentDictionary<string, int> dict, string[] str)               //инициализация данных
         {
             ResultDictionary = dict;
             words = str;
-            Worker.cde = cde;
         }
-        public static void Work(object? iteration)                                          //подсчет триплетов в слове 
+        public static void Work(string word)                                                        //подсчет триплетов в слове 
         {
-            if (iteration != null)
+            for (int i = 0; i < word.Length - 2; i++)
             {
-                var i = (int)iteration;
+                var triplet = word.Substring(i, 3);                                                 //выделение триплета
 
-                for (int j = 0; j < words[i].Length - 2; j++)
-                {
-                    string triplet = words[i][j].ToString()                                 //выделение триплета
-                                    + words[i][j + 1].ToString()
-                                    + words[i][j + 2].ToString();
-                    lock (locker)
-                    {
-                        if (!ResultDictionary.TryAdd(triplet, 1))                           //добавляем запись в словарь
-                        {
-                            ResultDictionary[triplet] += 1;                                 //если запись уже есть, то инкрементируем
-                        }
-                    }
-                }
+                ResultDictionary.AddOrUpdate(triplet, 1, (itemKey, itemValue) => itemValue + 1);    //обновление словаря
 
             }
-            cde.Signal();
         }
     }
 }
