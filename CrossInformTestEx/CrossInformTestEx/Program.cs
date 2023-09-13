@@ -1,81 +1,97 @@
-﻿using System.Collections.Concurrent;
+﻿using System;
+using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Security.Principal;
+using System.Text.RegularExpressions;
 
 class CrosInformTestEx
 {
+    private static Stopwatch Watcher = Stopwatch.StartNew();
+    private static ConcurrentDictionary<string, int> TripletsCounter = new ConcurrentDictionary<string, int>();
+    private static string path = "file.txt";
+    private static long fileLenth;
+    private static int bufferLenth = 2048;
+    private static long lettersHasRead = 0;
+    private static char[][] headTails;
+
+    private static object locker = new object();
     static void Main(string[] args)
     {
-        Stopwatch Watcher = Stopwatch.StartNew();
-        Watcher.Start();                                                                            //начало отсчета времени
-
-        char[] Separators = { ',', '.', '!', '?', ';', ':', ' ', '\'', '\"', '\n', '-' };           //разделительные знаки
-
-        string path = "file.txt";
-
-        //string path = args[0];
-
-        string InnerString;
-
+        Watcher.Start();
 
         using (var reader = new StreamReader(path))
         {
-            InnerString = reader.ReadToEnd();                                                       //считывание исодного текста
-        }
-
-        var WordPool = InnerString.Split(Separators)                                                //входная строка разбитая на слова
-            .AsParallel().Where(word => word.Length > 2).ToArray();                                 //длиннее 3-х букв
-
-        ConcurrentDictionary<string, int> TripletsCounter = new ConcurrentDictionary<string, int>();//словарь <триплет, количествоВхождений>
-
-        Worker.init(TripletsCounter, WordPool);                                                     //внесение данных в обрабатывающий класс
-
-
-        #region 1 вариант
-        Parallel.ForEach<string>(WordPool, Worker.Work);
-        #endregion
-
-
-        #region 2 вариант
-        //Task[] tasks = new Task[WordPool.Length];
-        //for (int i = 0; i < tasks.Length; i++)
-        //{
-        //    int j = i;
-        //    tasks[i] = Task.Factory.StartNew(() => Worker.Work(WordPool[j]));
-        //}
-        //Task.WaitAll(tasks);
-        #endregion
-
-
-
-        var TripletsTop = TripletsCounter.OrderByDescending(r => r.Value).Take(10);                 //выборка топ-10 триплетов по популярности
-        foreach (var entry in TripletsTop)                                                          //вывод в консоль
-        {
-            Console.WriteLine(entry.Key + " " + entry.Value);
-        }
-
-        Watcher.Stop();                                                                             //окончание отсчета времени
-        Console.WriteLine(Watcher.ElapsedMilliseconds);                                             //вывод миллисекунд
-
-    }
-    static class Worker
-    {
-        public static ConcurrentDictionary<string, int> ResultDictionary;                           //словарь популярности триплетов
-        public static string[] words;                                                               //набор исследуемых слов
-        private static object locker = new object();                                                //объект блокировки словаря
-        public static void init(ConcurrentDictionary<string, int> dict, string[] str)               //инициализация данных
-        {
-            ResultDictionary = dict;
-            words = str;
-        }
-        public static void Work(string word)                                                        //подсчет триплетов в слове 
-        {
-            for (int i = 0; i < word.Length - 2; i++)
+            fileLenth = reader.BaseStream.Length;
+            headTails = new char[fileLenth / bufferLenth + 2][];
+            for (int i = 0; i < fileLenth / bufferLenth + 2; i++)
+                headTails[i] = new char[4];
+            Parallel.For(0, fileLenth / bufferLenth + 1, (i) =>
             {
-                var triplet = word.Substring(i, 3);                                                 //выделение триплета
+                char[] buffer;
+                long tempLen;
+                if (fileLenth - lettersHasRead < bufferLenth)
+                {
+                    short len = (short)(fileLenth - lettersHasRead);
+                    buffer = new char[len];
+                    lock (locker)
+                    {
+                        reader.Read(buffer, 0, len);
+                        lettersHasRead += bufferLenth;
+                        tempLen = lettersHasRead;
+                    }
+                }
+                else
+                {
+                    buffer = new char[bufferLenth];
+                    lock (locker)
+                    {
+                        reader.Read(buffer, 0, bufferLenth);
+                        lettersHasRead += bufferLenth;
+                        tempLen = lettersHasRead;
+                    }
+                }
 
-                ResultDictionary.AddOrUpdate(triplet, 1, (itemKey, itemValue) => itemValue + 1);    //обновление словаря
+                if (isBufferEmpty(buffer)) return;
+                count(buffer, (int)tempLen / bufferLenth-1);
+            });
+            
+        }
+        Parallel.For(0, headTails.Length, (i) =>
+        {
+            if (isBufferEmpty(headTails[i])) return;
+            count(headTails[i], - 1);
+        });
 
+        var TripletsTop = TripletsCounter.OrderByDescending(r => r.Value).Take(10);
+        foreach (var entry in TripletsTop)
+        {
+            Console.WriteLine($"{entry.Key} : {entry.Value}");
+        }
+
+        Watcher.Stop();
+        Console.WriteLine($"time: {Watcher.ElapsedMilliseconds}");
+    }
+    private static bool isBufferEmpty(char[] buffer) 
+        => buffer.Contains('\0') && buffer.Where(c => c != '\0').ToArray().Length == 0;
+    private static void count(char[] buffer, int iterNum)
+    {
+        for (int i = 0;i < buffer.Length - 2; i++)
+        {
+            var key = buffer.AsSpan(i, 3).ToString();
+            if (key.All(Char.IsLetter))
+            {
+                if (!TripletsCounter.TryAdd(key, 1))
+                {
+                    TripletsCounter[key]++;
+                }
             }
+        }
+        if (iterNum != -1)
+        {
+            headTails[iterNum][2] = buffer[0];
+            headTails[iterNum][3] = buffer[1];
+            headTails[iterNum + 1][0] = buffer[buffer.Length - 2];
+            headTails[iterNum + 1][1] = buffer[buffer.Length - 1];
         }
     }
 }
